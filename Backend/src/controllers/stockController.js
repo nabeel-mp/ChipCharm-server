@@ -1,36 +1,41 @@
-const StockEntry  = require('../models/StockEntry');
-const PackedItem  = require('../models/PackedItem');
+const StockEntry = require('../models/StockEntry');
+const PackedItem = require('../models/PackedItem');
 
-// GET /api/stock  — list all entries (newest first)
+// GET /api/stock
 exports.getStockEntries = async (req, res) => {
   try {
-    const entries = await StockEntry.find({ createdBy: req.user._id })
-      .sort({ date: -1 });
+    const filter = { createdBy: req.user._id };
+    if (req.query.product_type) filter.product_type = req.query.product_type;
+
+    const entries = await StockEntry.find(filter).sort({ date: -1 });
     res.json(entries);
   } catch {
     res.status(500).json({ message: 'Server error' });
   }
 };
 
-// POST /api/stock  — create daily production entry
+// POST /api/stock
 exports.createStockEntry = async (req, res) => {
-  const { date, produced_kg, notes } = req.body;
+  const { date, product_type, produced_kg, notes } = req.body;
   try {
-    // Find previous entry to set opening stock
-    const lastEntry = await StockEntry.findOne({ createdBy: req.user._id })
-      .sort({ date: -1 });
+    // Opening stock = last closing stock FOR THE SAME PRODUCT TYPE
+    const lastEntry = await StockEntry.findOne({
+      createdBy: req.user._id,
+      product_type
+    }).sort({ date: -1 });
 
     const opening_stock_kg = lastEntry ? lastEntry.closing_stock_kg : 0;
 
-    // Total packed KG for that day (from PackedItems)
     const entryDate = new Date(date);
-    const nextDay   = new Date(entryDate);
+    const nextDay = new Date(entryDate);
     nextDay.setDate(nextDay.getDate() + 1);
 
+    // Packed weight for this product type on this date
     const packedToday = await PackedItem.aggregate([
       {
         $match: {
           createdBy: req.user._id,
+          product_type,
           date: { $gte: entryDate, $lt: nextDay }
         }
       },
@@ -38,10 +43,11 @@ exports.createStockEntry = async (req, res) => {
     ]);
 
     const packed_kg = packedToday[0]?.total || 0;
-    const closing_stock_kg = opening_stock_kg + produced_kg - packed_kg;
+    const closing_stock_kg = opening_stock_kg + Number(produced_kg) - packed_kg;
 
     const entry = await StockEntry.create({
       date,
+      product_type,
       produced_kg,
       opening_stock_kg,
       closing_stock_kg,
@@ -55,7 +61,7 @@ exports.createStockEntry = async (req, res) => {
   }
 };
 
-// PUT /api/stock/:id  — update an entry
+// PUT /api/stock/:id
 exports.updateStockEntry = async (req, res) => {
   try {
     const entry = await StockEntry.findOneAndUpdate(

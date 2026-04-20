@@ -1,14 +1,17 @@
 const express = require('express');
-const router  = express.Router();
+const router = express.Router();
 const { protect } = require('../middleware/authMiddleware');
 const {
   getPackedItems,
   createPackedItem,
   updatePackedItem,
-  deletePackedItem
+  deletePackedItem,
+  getPackedSummary
 } = require('../controllers/packedController');
 
 router.use(protect);
+
+router.get('/summary', getPackedSummary);
 
 router.route('/')
   .get(getPackedItems)
