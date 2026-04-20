@@ -3,6 +3,9 @@ const PackedItem = require('../models/PackedItem');
 // GET /api/packed
 exports.getPackedItems = async (req, res) => {
   try {
+    if (!req.user || !req.user._id) {
+      return res.status(401).json({ message: 'Authentication error: User not found.' });
+    }
     const { status, type, date, product_type, supplier_name, destination } = req.query;
     const filter = { createdBy: req.user._id };
 
