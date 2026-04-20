@@ -6,6 +6,10 @@ const stockEntrySchema = new mongoose.Schema({
     required: true,
     default: Date.now
   },
+  product_type: {       // Added product tracking
+    type: String,
+    required: true
+  },
   produced_kg: {        // How many KG of chips made today
     type: Number,
     required: true,

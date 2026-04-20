@@ -7,6 +7,10 @@ const packedItemSchema = new mongoose.Schema({
     required: true,
     default: Date.now
   },
+  product_type: {           // Added product tracking
+    type: String,
+    required: true
+  },
   packing_type: {
     type: String,
     enum: ['kg_pack', 'jar', 'normal'],
@@ -27,7 +31,7 @@ const packedItemSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['in_shop', 'sold', 'sample'],
+    enum: ['in_shop', 'sold', 'sample', 'delivered'], // Added 'delivered' for suppliers
     default: 'in_shop'
   },
   label: {                  // e.g. "500g Masala Jar"
