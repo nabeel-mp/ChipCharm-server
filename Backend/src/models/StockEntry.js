@@ -32,6 +32,11 @@ const stockEntrySchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  // Track how many kg have been packed from this stock
+  packed_kg: {
+    type: Number,
+    default: 0
+  },
   notes: {
     type: String,
     default: ''
@@ -44,3 +49,4 @@ const stockEntrySchema = new mongoose.Schema({
 }, { timestamps: true });
 
 module.exports = mongoose.model('StockEntry', stockEntrySchema);
+module.exports.PRODUCT_TYPES = PRODUCT_TYPES;

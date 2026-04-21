@@ -1,5 +1,6 @@
 const StockEntry = require('../models/StockEntry');
 const PackedItem = require('../models/PackedItem');
+const mongoose   = require('mongoose');
 
 // GET /api/stock
 exports.getStockEntries = async (req, res) => {
@@ -9,7 +10,8 @@ exports.getStockEntries = async (req, res) => {
 
     const entries = await StockEntry.find(filter).sort({ date: -1 });
     res.json(entries);
-  } catch {
+  } catch (err) {
+    console.error('getStockEntries error:', err.message);
     res.status(500).json({ message: 'Server error' });
   }
 };
@@ -18,23 +20,26 @@ exports.getStockEntries = async (req, res) => {
 exports.createStockEntry = async (req, res) => {
   const { date, product_type, produced_kg, notes } = req.body;
   try {
-    // Opening stock = last closing stock FOR THE SAME PRODUCT TYPE
+    const userId = req.user._id;
+
+    // Opening stock = last closing stock for this product type
     const lastEntry = await StockEntry.findOne({
-      createdBy: req.user._id,
+      createdBy: userId,
       product_type
     }).sort({ date: -1 });
 
     const opening_stock_kg = lastEntry ? lastEntry.closing_stock_kg : 0;
 
     const entryDate = new Date(date);
-    const nextDay = new Date(entryDate);
+    const nextDay   = new Date(entryDate);
     nextDay.setDate(nextDay.getDate() + 1);
 
     // Packed weight for this product type on this date
+    const userObjId = new mongoose.Types.ObjectId(userId);
     const packedToday = await PackedItem.aggregate([
       {
         $match: {
-          createdBy: req.user._id,
+          createdBy:    userObjId,
           product_type,
           date: { $gte: entryDate, $lt: nextDay }
         }
@@ -42,21 +47,28 @@ exports.createStockEntry = async (req, res) => {
       { $group: { _id: null, total: { $sum: '$total_weight_kg' } } }
     ]);
 
-    const packed_kg = packedToday[0]?.total || 0;
+    const packed_kg        = packedToday[0]?.total || 0;
     const closing_stock_kg = opening_stock_kg + Number(produced_kg) - packed_kg;
 
-    const entry = await StockEntry.create({
-      date,
+    // Insert directly via collection to avoid session issues on standalone MongoDB
+    const doc = {
+      date:              entryDate,
       product_type,
-      produced_kg,
+      produced_kg:       Number(produced_kg),
       opening_stock_kg,
       closing_stock_kg,
-      notes,
-      createdBy: req.user._id
-    });
+      notes:             notes || '',
+      createdBy:         userObjId,
+      createdAt:         new Date(),
+      updatedAt:         new Date()
+    };
+
+    const result = await StockEntry.collection.insertOne(doc);
+    const entry  = await StockEntry.findById(result.insertedId);
 
     res.status(201).json(entry);
   } catch (err) {
+    console.error('createStockEntry error:', err.message);
     res.status(500).json({ message: err.message });
   }
 };
@@ -66,12 +78,13 @@ exports.updateStockEntry = async (req, res) => {
   try {
     const entry = await StockEntry.findOneAndUpdate(
       { _id: req.params.id, createdBy: req.user._id },
-      req.body,
+      { ...req.body, updatedAt: new Date() },
       { new: true }
     );
     if (!entry) return res.status(404).json({ message: 'Entry not found' });
     res.json(entry);
-  } catch {
+  } catch (err) {
+    console.error('updateStockEntry error:', err.message);
     res.status(500).json({ message: 'Server error' });
   }
 };
@@ -79,13 +92,14 @@ exports.updateStockEntry = async (req, res) => {
 // DELETE /api/stock/:id
 exports.deleteStockEntry = async (req, res) => {
   try {
-    const entry = await StockEntry.findOneAndDelete({
-      _id: req.params.id,
-      createdBy: req.user._id
+    const result = await StockEntry.collection.deleteOne({
+      _id:       new mongoose.Types.ObjectId(req.params.id),
+      createdBy: new mongoose.Types.ObjectId(req.user._id)
     });
-    if (!entry) return res.status(404).json({ message: 'Entry not found' });
+    if (result.deletedCount === 0) return res.status(404).json({ message: 'Entry not found' });
     res.json({ message: 'Deleted' });
-  } catch {
+  } catch (err) {
+    console.error('deleteStockEntry error:', err.message);
     res.status(500).json({ message: 'Server error' });
   }
 };
