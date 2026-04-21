@@ -1,4 +1,5 @@
 const PackedItem = require('../models/PackedItem');
+const DailyStock = require('../models/Dailystock'); // Ensure this matches your actual model filename
 const mongoose = require('mongoose');
 
 // GET /api/packed
@@ -35,9 +36,12 @@ exports.getPackedItems = async (req, res) => {
 
 // POST /api/packed
 exports.createPackedItem = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
     if (!req.user || !req.user._id) {
-      return res.status(401).json({ message: 'Authentication error: User not found. Please log in again.' });
+      throw new Error('Authentication error: User not found. Please log in again.');
     }
 
     const {
@@ -46,19 +50,41 @@ exports.createPackedItem = async (req, res) => {
       destination, supplier_name
     } = req.body;
 
-    if (!product_type) return res.status(400).json({ message: 'product_type is required' });
-    if (!packing_type) return res.status(400).json({ message: 'packing_type is required' });
+    if (!product_type) throw new Error('product_type is required');
+    if (!packing_type) throw new Error('packing_type is required');
     if (weight_per_unit_grams == null || isNaN(weight_per_unit_grams)) {
-      return res.status(400).json({ message: 'weight_per_unit_grams must be a valid number' });
+      throw new Error('weight_per_unit_grams must be a valid number');
     }
     if (quantity == null || isNaN(quantity)) {
-      return res.status(400).json({ message: 'quantity must be a valid number' });
+      throw new Error('quantity must be a valid number');
     }
 
     const weightNum   = Number(weight_per_unit_grams);
     const quantityNum = Number(quantity);
     const total_weight_kg = (weightNum * quantityNum) / 1000;
 
+    // 1. Find today's DailyStock for this specific product_type
+    // Assuming your DailyStock model has a 'product_type' or 'flavor' field mapping to this.
+    // Adjust the query if you track bulk stock by a different field name.
+    const dailyStock = await DailyStock.findOne({ 
+      product_type: product_type, 
+      createdBy: req.user._id 
+    }).session(session);
+
+    if (!dailyStock) {
+      throw new Error(`No daily bulk stock found for product: ${product_type}`);
+    }
+
+    // 2. Check if enough bulk stock exists (assuming the field is named bulkStock)
+    if (dailyStock.bulkStock < total_weight_kg) {
+      throw new Error(`Insufficient bulk stock. Required: ${total_weight_kg}kg, Available: ${dailyStock.bulkStock}kg`);
+    }
+
+    // 3. Deduct the bulk stock and save
+    dailyStock.bulkStock -= total_weight_kg;
+    await dailyStock.save({ session });
+
+    // 4. Create the new packed item
     const itemData = {
       date: date || new Date(),
       product_type,
@@ -75,16 +101,27 @@ exports.createPackedItem = async (req, res) => {
     if (stockEntry) itemData.stockEntry = stockEntry;
 
     const item = new PackedItem(itemData);
-    await item.save();
+    await item.save({ session });
 
+    // Commit the transaction successfully
+    await session.commitTransaction();
     res.status(201).json(item);
+
   } catch (err) {
+    // Rollback all changes (both bulk deduction and packed item creation)
+    await session.abortTransaction();
     console.error('🔥 CRASH in createPackedItem:', err);
+
     if (err.name === 'ValidationError') {
       const msg = Object.values(err.errors).map(e => e.message).join(', ');
       return res.status(400).json({ message: msg });
     }
-    res.status(500).json({ message: err.message || 'Server error creating packed item' });
+    
+    // Return 400 for business logic errors (like insufficient stock), 500 for others
+    const statusCode = err.message.includes('stock') || err.message.includes('required') ? 400 : 500;
+    res.status(statusCode).json({ message: err.message || 'Server error creating packed item' });
+  } finally {
+    session.endSession();
   }
 };
 
