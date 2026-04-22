@@ -63,14 +63,13 @@ const supplierTripSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // Auto-calc total_weight_kg for each item
-supplierTripSchema.pre('save', function(next) {
+supplierTripSchema.pre('save', function() {
   for (const item of this.carried_out) {
     item.total_weight_kg = (item.quantity * item.weight_per_unit_grams) / 1000;
   }
   for (const item of this.returned_items) {
     item.total_weight_kg = (item.quantity * item.weight_per_unit_grams) / 1000;
   }
-  next();
 });
 
 module.exports = mongoose.model('SupplierTrip', supplierTripSchema);

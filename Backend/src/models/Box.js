@@ -52,10 +52,9 @@ const boxSchema = new mongoose.Schema({
   }
 }, { timestamps: true });
 
-boxSchema.pre('save', function(next) {
+boxSchema.pre('save', function() {
   this.total_units = this.boxes_packed * this.units_per_box;
   this.total_weight_kg = (this.total_units * this.weight_per_unit_grams) / 1000;
-  next();
 });
 
 module.exports = mongoose.model('Box', boxSchema);

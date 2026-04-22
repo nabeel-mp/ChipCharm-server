@@ -70,9 +70,8 @@ const packedItemSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // Auto-calculate total weight before saving
-packedItemSchema.pre('save', function (next) {
+packedItemSchema.pre('save', function () {
   this.total_weight_kg = (this.weight_per_unit_grams * this.quantity) / 1000;
-  next();
 });
 
 module.exports = mongoose.model('PackedItem', packedItemSchema);
