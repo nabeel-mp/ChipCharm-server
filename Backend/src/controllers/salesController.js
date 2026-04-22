@@ -7,13 +7,19 @@ exports.getSales = async (req, res) => {
     const filter = { createdBy: req.user._id };
     if (req.query.sale_type)    filter.sale_type    = req.query.sale_type;
     if (req.query.payment_mode) filter.payment_mode = req.query.payment_mode;
+    if (req.query.customer_name) {
+      filter.customer_name = new RegExp(req.query.customer_name, 'i');
+    }
     if (req.query.date) {
       const d = new Date(req.query.date);
       const n = new Date(d); n.setDate(d.getDate() + 1);
       if (!isNaN(d)) filter.date = { $gte: d, $lt: n };
     }
     if (req.query.from && req.query.to) {
-      filter.date = { $gte: new Date(req.query.from), $lte: new Date(req.query.to) };
+      filter.date = {
+        $gte: new Date(req.query.from),
+        $lte: new Date(new Date(req.query.to).setHours(23,59,59,999))
+      };
     }
     const sales = await Sale.find(filter).sort({ date: -1 });
     res.json(sales);
@@ -31,15 +37,23 @@ exports.createSale = async (req, res) => {
       return res.status(400).json({ message: 'At least one sale item is required' });
 
     for (const item of items) {
-      if (!item.product_type)  return res.status(400).json({ message: 'product_type is required per item' });
-      if (!item.packing_type)  return res.status(400).json({ message: 'packing_type is required per item' });
+      if (!item.product_type)    return res.status(400).json({ message: 'product_type is required per item' });
+      if (!item.packing_type)    return res.status(400).json({ message: 'packing_type is required per item' });
       if (item.unit_price == null) return res.status(400).json({ message: 'unit_price is required per item' });
-      if (!item.quantity)      return res.status(400).json({ message: 'quantity is required per item' });
+      if (!item.quantity)        return res.status(400).json({ message: 'quantity is required per item' });
+      // Default weight if not provided
+      if (!item.weight_per_unit_grams) {
+        const WEIGHTS = { normal_half_kg: 500, normal_1kg: 1000, jar_small: 200, jar_medium: 400, jar_large: 750, big_bottle: 1500 };
+        item.weight_per_unit_grams = WEIGHTS[item.packing_type] || 500;
+      }
     }
+
+    const validTypes = ['shop', 'factory', 'counter', 'supplier_settlement'];
+    const resolvedType = validTypes.includes(sale_type) ? sale_type : 'shop';
 
     const sale = new Sale({
       date:              date || new Date(),
-      sale_type:         sale_type || 'shop',
+      sale_type:         resolvedType,
       items,
       discount:          discount || 0,
       payment_mode:      payment_mode || 'cash',
@@ -93,7 +107,9 @@ exports.getSalesSummary = async (req, res) => {
     // Date range (default: current month)
     const now       = new Date();
     const fromParam = req.query.from ? new Date(req.query.from) : new Date(now.getFullYear(), now.getMonth(), 1);
-    const toParam   = req.query.to   ? new Date(req.query.to)   : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+    const toParam   = req.query.to
+      ? new Date(new Date(req.query.to).setHours(23,59,59,999))
+      : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
 
     const matchRange = { createdBy: userId, date: { $gte: fromParam, $lte: toParam } };
 
@@ -111,15 +127,40 @@ exports.getSalesSummary = async (req, res) => {
       { $group: { _id: null, total: { $sum: '$total_amount' }, count: { $sum: 1 } } }
     ]);
 
+    // Revenue by sale type (factory / counter / shop / supplier_settlement)
+    const bySaleType = await Sale.aggregate([
+      { $match: matchRange },
+      {
+        $group: {
+          _id:   '$sale_type',
+          total: { $sum: '$total_amount' },
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    // Revenue by counter (customer_name where sale_type = counter)
+    const byCounter = await Sale.aggregate([
+      { $match: { ...matchRange, sale_type: 'counter' } },
+      {
+        $group: {
+          _id:           '$customer_name',
+          total_revenue: { $sum: '$total_amount' },
+          count:         { $sum: 1 }
+        }
+      },
+      { $sort: { total_revenue: -1 } }
+    ]);
+
     // Daily revenue trend (last 30 days)
     const thirtyAgo = new Date(); thirtyAgo.setDate(thirtyAgo.getDate() - 30);
     const dailyTrend = await Sale.aggregate([
       { $match: { createdBy: userId, date: { $gte: thirtyAgo } } },
       {
         $group: {
-          _id: { $dateToString: { format: '%Y-%m-%d', date: '$date' } },
-          revenue:     { $sum: '$total_amount' },
-          sale_count:  { $sum: 1 }
+          _id:        { $dateToString: { format: '%Y-%m-%d', date: '$date' } },
+          revenue:    { $sum: '$total_amount' },
+          sale_count: { $sum: 1 }
         }
       },
       { $sort: { _id: 1 } },
@@ -132,7 +173,7 @@ exports.getSalesSummary = async (req, res) => {
       { $unwind: '$items' },
       {
         $group: {
-          _id:          '$items.product_type',
+          _id:           '$items.product_type',
           total_revenue: { $sum: '$items.total_price' },
           total_units:   { $sum: '$items.quantity' }
         }
@@ -152,30 +193,26 @@ exports.getSalesSummary = async (req, res) => {
       { $unwind: '$items' },
       {
         $group: {
-          _id:          '$items.packing_type',
-          total_units:  { $sum: '$items.quantity' },
+          _id:           '$items.packing_type',
+          total_units:   { $sum: '$items.quantity' },
           total_revenue: { $sum: '$items.total_price' }
         }
       },
       { $sort: { total_units: -1 } }
     ]);
 
-    // Recent sales
-    const recentSales = await Sale.find({ createdBy: userId })
-      .sort({ date: -1 })
-      .limit(10);
-
     res.json({
-      period:         { from: fromParam, to: toParam },
-      total_revenue:  revenue?.total   || 0,
-      total_sales:    revenue?.count   || 0,
-      today_revenue:  todayRev?.total  || 0,
-      today_sales:    todayRev?.count  || 0,
-      daily_trend:    dailyTrend,
-      by_product:     byProduct,
-      by_payment:     byPayment,
+      period:          { from: fromParam, to: toParam },
+      total_revenue:   revenue?.total  || 0,
+      total_sales:     revenue?.count  || 0,
+      today_revenue:   todayRev?.total || 0,
+      today_sales:     todayRev?.count || 0,
+      daily_trend:     dailyTrend,
+      by_product:      byProduct,
+      by_payment:      byPayment,
+      by_sale_type:    bySaleType,
+      by_counter:      byCounter,
       by_packing_type: byPackingType,
-      recent_sales:   recentSales
     });
   } catch (err) {
     res.status(500).json({ message: err.message });

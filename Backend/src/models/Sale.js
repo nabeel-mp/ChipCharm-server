@@ -20,10 +20,13 @@ const saleSchema = new mongoose.Schema({
     required: true,
     default: Date.now
   },
-  // Walk-in shop sale OR supplier cash settlement
+  // shop = in-shop sale
+  // factory = direct walk-in sale at factory
+  // counter = sale recorded by/for a roadside counter or shop
+  // supplier_settlement = supplier cash settlement
   sale_type: {
     type: String,
-    enum: ['shop', 'supplier_settlement'],
+    enum: ['shop', 'factory', 'counter', 'supplier_settlement'],
     default: 'shop'
   },
   items: [saleItemSchema],
@@ -35,6 +38,8 @@ const saleSchema = new mongoose.Schema({
     enum: ['cash', 'upi', 'card', 'credit'],
     default: 'cash'
   },
+  // For factory sale: customer name / walk-in
+  // For counter sale: counter/shop name
   customer_name: { type: String, default: '' },
   // If linked to a supplier trip
   supplier_trip_ref: {
