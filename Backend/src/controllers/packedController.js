@@ -31,8 +31,6 @@ exports.getPackedItems = async (req, res) => {
 
 // POST /api/packed  — deducts bulk stock from StockEntry
 exports.createPackedItem = async (req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
   try {
     if (!req.user || !req.user._id)
       throw new Error('Not authenticated');
@@ -62,14 +60,12 @@ exports.createPackedItem = async (req, res) => {
         product_type,
         closing_stock_kg: { $gte: total_weight_kg }
       })
-      .sort({ date: -1 })
-      .session(session);
+      .sort({ date: -1 });
 
     if (!latestEntry) {
       const anyEntry = await StockEntry
         .findOne({ createdBy: req.user._id, product_type })
-        .sort({ date: -1 })
-        .session(session);
+        .sort({ date: -1 });
 
       const available = anyEntry ? anyEntry.closing_stock_kg : 0;
       throw new Error(
@@ -81,7 +77,7 @@ exports.createPackedItem = async (req, res) => {
     // Deduct from closing_stock_kg
     latestEntry.closing_stock_kg -= total_weight_kg;
     latestEntry.packed_kg         = (latestEntry.packed_kg || 0) + total_weight_kg;
-    await latestEntry.save({ session });
+    await latestEntry.save();
 
     // Create packed item
     const itemData = {
@@ -100,16 +96,14 @@ exports.createPackedItem = async (req, res) => {
     if (stockEntry) itemData.stockEntry = stockEntry;
 
     const item = new PackedItem(itemData);
-    await item.save({ session });
+    await item.save();
 
-    await session.commitTransaction();
     res.status(201).json({
       ...item.toObject(),
       stock_deducted_kg:      total_weight_kg,
       remaining_stock_kg:     latestEntry.closing_stock_kg
     });
   } catch (err) {
-    await session.abortTransaction();
     console.error('createPackedItem error:', err);
     if (err.name === 'ValidationError') {
       const msg = Object.values(err.errors).map(e => e.message).join(', ');
@@ -119,8 +113,6 @@ exports.createPackedItem = async (req, res) => {
                           err.message.includes('required') ||
                           err.message.includes('authenticated');
     res.status(isBusinessErr ? 400 : 500).json({ message: err.message });
-  } finally {
-    session.endSession();
   }
 };
 
@@ -162,41 +154,33 @@ exports.updatePackedItem = async (req, res) => {
 
 // DELETE /api/packed/:id  — restores stock on delete
 exports.deletePackedItem = async (req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
   try {
     if (!req.user || !req.user._id)
       return res.status(401).json({ message: 'Not authenticated' });
 
     const item = await PackedItem.findOne({
       _id: req.params.id, createdBy: req.user._id
-    }).session(session);
+    });
 
     if (!item) {
-      await session.abortTransaction();
       return res.status(404).json({ message: 'Item not found' });
     }
 
     // Restore stock
     const latestEntry = await StockEntry
       .findOne({ createdBy: req.user._id, product_type: item.product_type })
-      .sort({ date: -1 })
-      .session(session);
+      .sort({ date: -1 });
 
     if (latestEntry) {
       latestEntry.closing_stock_kg += item.total_weight_kg;
       latestEntry.packed_kg         = Math.max(0, (latestEntry.packed_kg || 0) - item.total_weight_kg);
-      await latestEntry.save({ session });
+      await latestEntry.save();
     }
 
-    await item.deleteOne({ session });
-    await session.commitTransaction();
+    await item.deleteOne();
     res.json({ message: 'Deleted', stock_restored_kg: item.total_weight_kg });
   } catch (err) {
-    await session.abortTransaction();
     res.status(500).json({ message: err.message });
-  } finally {
-    session.endSession();
   }
 };
 

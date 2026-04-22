@@ -21,8 +21,6 @@ exports.getBoxes = async (req, res) => {
 
 // POST /api/boxes
 exports.createBox = async (req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
   try {
     const {
       date, product_type, boxes_packed,
@@ -44,14 +42,12 @@ exports.createBox = async (req, res) => {
         product_type,
         closing_stock_kg: { $gte: totalWeightKg }
       })
-      .sort({ date: -1 })
-      .session(session);
+      .sort({ date: -1 });
 
     if (!latestEntry) {
       const anyEntry = await StockEntry
         .findOne({ createdBy: req.user._id, product_type })
-        .sort({ date: -1 })
-        .session(session);
+        .sort({ date: -1 });
       const available = anyEntry ? anyEntry.closing_stock_kg : 0;
       throw new Error(
         `Insufficient stock for ${product_type}. ` +
@@ -61,7 +57,7 @@ exports.createBox = async (req, res) => {
 
     latestEntry.closing_stock_kg -= totalWeightKg;
     latestEntry.packed_kg         = (latestEntry.packed_kg || 0) + totalWeightKg;
-    await latestEntry.save({ session });
+    await latestEntry.save();
 
     const box = new Box({
       date:                  date || new Date(),
@@ -72,51 +68,42 @@ exports.createBox = async (req, res) => {
       notes:                 notes || '',
       createdBy:             req.user._id
     });
-    await box.save({ session });
+    await box.save();
 
-    await session.commitTransaction();
     res.status(201).json({
       ...box.toObject(),
       stock_deducted_kg:  totalWeightKg,
       remaining_stock_kg: latestEntry.closing_stock_kg
     });
   } catch (err) {
-    await session.abortTransaction();
     console.error('createBox error:', err);
     res.status(err.message.includes('stock') || err.message.includes('required') ? 400 : 500)
       .json({ message: err.message });
-  } finally {
-    session.endSession();
   }
 };
 
 // DELETE /api/boxes/:id  — restores stock
 exports.deleteBox = async (req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
   try {
-    const box = await Box.findOne({ _id: req.params.id, createdBy: req.user._id }).session(session);
-    if (!box) { await session.abortTransaction(); return res.status(404).json({ message: 'Box not found' }); }
+    const box = await Box.findOne({ _id: req.params.id, createdBy: req.user._id });
+    if (!box) { 
+      return res.status(404).json({ message: 'Box not found' }); 
+    }
 
     const latestEntry = await StockEntry
       .findOne({ createdBy: req.user._id, product_type: box.product_type })
-      .sort({ date: -1 })
-      .session(session);
+      .sort({ date: -1 });
 
     if (latestEntry) {
       latestEntry.closing_stock_kg += box.total_weight_kg;
       latestEntry.packed_kg         = Math.max(0, (latestEntry.packed_kg || 0) - box.total_weight_kg);
-      await latestEntry.save({ session });
+      await latestEntry.save();
     }
 
-    await box.deleteOne({ session });
-    await session.commitTransaction();
+    await box.deleteOne();
     res.json({ message: 'Deleted', stock_restored_kg: box.total_weight_kg });
   } catch (err) {
-    await session.abortTransaction();
     res.status(500).json({ message: err.message });
-  } finally {
-    session.endSession();
   }
 };
 
