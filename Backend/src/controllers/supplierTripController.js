@@ -66,16 +66,15 @@ exports.createTrip = async (req, res) => {
 };
 
 // PUT /api/supplier-trips/:id/return  — Record supplier returning items
+// NOTE: No MongoDB transactions used here - works on standalone MongoDB
 exports.recordReturn = async (req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
   try {
     const { returned_items, cash_collected, notes } = req.body;
 
     const trip = await SupplierTrip.findOne({
       _id: req.params.id, createdBy: req.user._id
-    }).session(session);
-    if (!trip) { await session.abortTransaction(); return res.status(404).json({ message: 'Trip not found' }); }
+    });
+    if (!trip) return res.status(404).json({ message: 'Trip not found' });
 
     // Update returned items on trip
     trip.returned_items  = returned_items || [];
@@ -91,18 +90,14 @@ exports.recordReturn = async (req, res) => {
           status,
           return_reason: ret.reason === 'sample_return' ? 'other' : ret.reason,
           return_notes:  ret.notes || ''
-        }).session(session);
+        });
       }
     }
 
-    await trip.save({ session });
-    await session.commitTransaction();
+    await trip.save();
     res.json(trip);
   } catch (err) {
-    await session.abortTransaction();
     res.status(500).json({ message: err.message });
-  } finally {
-    session.endSession();
   }
 };
 
@@ -141,9 +136,9 @@ exports.getTripSummary = async (req, res) => {
       {
         $group: {
           _id: '$supplier_name',
-          total_trips:        { $sum: 1 },
+          total_trips:          { $sum: 1 },
           total_cash_collected: { $sum: '$cash_collected' },
-          pending_trips:      { $sum: { $cond: [{ $eq: ['$status', 'pending'] }, 1, 0] } }
+          pending_trips:        { $sum: { $cond: [{ $eq: ['$status', 'pending'] }, 1, 0] } }
         }
       },
       { $sort: { total_cash_collected: -1 } }

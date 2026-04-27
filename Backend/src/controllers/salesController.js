@@ -1,6 +1,15 @@
 const Sale     = require('../models/Sale');
 const mongoose = require('mongoose');
 
+const DEFAULT_WEIGHTS = {
+  normal_half_kg: 500,
+  normal_1kg:     1000,
+  jar_small:      200,
+  jar_medium:     400,
+  jar_large:      750,
+  big_bottle:     1500
+};
+
 // GET /api/sales
 exports.getSales = async (req, res) => {
   try {
@@ -18,7 +27,7 @@ exports.getSales = async (req, res) => {
     if (req.query.from && req.query.to) {
       filter.date = {
         $gte: new Date(req.query.from),
-        $lte: new Date(new Date(req.query.to).setHours(23,59,59,999))
+        $lte: new Date(new Date(req.query.to).setHours(23, 59, 59, 999))
       };
     }
     const sales = await Sale.find(filter).sort({ date: -1 });
@@ -31,21 +40,44 @@ exports.getSales = async (req, res) => {
 // POST /api/sales
 exports.createSale = async (req, res) => {
   try {
-    const { date, sale_type, items, discount, payment_mode, customer_name, supplier_trip_ref, notes } = req.body;
+    const {
+      date, sale_type, items, discount,
+      payment_mode, customer_name,
+      supplier_trip_ref, notes
+    } = req.body;
 
-    if (!items || !items.length)
+    if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ message: 'At least one sale item is required' });
+    }
 
-    for (const item of items) {
-      if (!item.product_type)    return res.status(400).json({ message: 'product_type is required per item' });
-      if (!item.packing_type)    return res.status(400).json({ message: 'packing_type is required per item' });
-      if (item.unit_price == null) return res.status(400).json({ message: 'unit_price is required per item' });
-      if (!item.quantity)        return res.status(400).json({ message: 'quantity is required per item' });
-      // Default weight if not provided
-      if (!item.weight_per_unit_grams) {
-        const WEIGHTS = { normal_half_kg: 500, normal_1kg: 1000, jar_small: 200, jar_medium: 400, jar_large: 750, big_bottle: 1500 };
-        item.weight_per_unit_grams = WEIGHTS[item.packing_type] || 500;
-      }
+    // Validate and normalise each item
+    const normalisedItems = [];
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+
+      if (!item.product_type)
+        return res.status(400).json({ message: `Item ${i + 1}: product_type is required` });
+      if (!item.packing_type)
+        return res.status(400).json({ message: `Item ${i + 1}: packing_type is required` });
+      if (item.unit_price == null || isNaN(Number(item.unit_price)))
+        return res.status(400).json({ message: `Item ${i + 1}: unit_price is required` });
+      if (!item.quantity || isNaN(Number(item.quantity)) || Number(item.quantity) < 1)
+        return res.status(400).json({ message: `Item ${i + 1}: quantity must be >= 1` });
+
+      // Default weight_per_unit_grams if missing / invalid
+      const weight = Number(item.weight_per_unit_grams);
+      const resolvedWeight = (!weight || isNaN(weight))
+        ? (DEFAULT_WEIGHTS[item.packing_type] || 500)
+        : weight;
+
+      normalisedItems.push({
+        product_type:          item.product_type,
+        packing_type:          item.packing_type,
+        weight_per_unit_grams: resolvedWeight,
+        quantity:              Number(item.quantity),
+        unit_price:            Number(item.unit_price),
+        ...(item.packed_item_ref ? { packed_item_ref: item.packed_item_ref } : {})
+      });
     }
 
     const validTypes = ['shop', 'factory', 'counter', 'supplier_settlement'];
@@ -54,17 +86,19 @@ exports.createSale = async (req, res) => {
     const sale = new Sale({
       date:              date || new Date(),
       sale_type:         resolvedType,
-      items,
-      discount:          discount || 0,
+      items:             normalisedItems,
+      discount:          Number(discount) || 0,
       payment_mode:      payment_mode || 'cash',
       customer_name:     customer_name || '',
-      supplier_trip_ref: supplier_trip_ref || undefined,
+      ...(supplier_trip_ref ? { supplier_trip_ref } : {}),
       notes:             notes || '',
       createdBy:         req.user._id
     });
+
     await sale.save();
     res.status(201).json(sale);
   } catch (err) {
+    console.error('createSale error:', err);
     if (err.name === 'ValidationError') {
       const msg = Object.values(err.errors).map(e => e.message).join(', ');
       return res.status(400).json({ message: msg });
@@ -91,7 +125,9 @@ exports.updateSale = async (req, res) => {
 // DELETE /api/sales/:id
 exports.deleteSale = async (req, res) => {
   try {
-    const sale = await Sale.findOneAndDelete({ _id: req.params.id, createdBy: req.user._id });
+    const sale = await Sale.findOneAndDelete({
+      _id: req.params.id, createdBy: req.user._id
+    });
     if (!sale) return res.status(404).json({ message: 'Sale not found' });
     res.json({ message: 'Deleted' });
   } catch (err) {
@@ -106,12 +142,17 @@ exports.getSalesSummary = async (req, res) => {
 
     // Date range (default: current month)
     const now       = new Date();
-    const fromParam = req.query.from ? new Date(req.query.from) : new Date(now.getFullYear(), now.getMonth(), 1);
+    const fromParam = req.query.from
+      ? new Date(req.query.from)
+      : new Date(now.getFullYear(), now.getMonth(), 1);
     const toParam   = req.query.to
-      ? new Date(new Date(req.query.to).setHours(23,59,59,999))
+      ? new Date(new Date(req.query.to).setHours(23, 59, 59, 999))
       : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
 
-    const matchRange = { createdBy: userId, date: { $gte: fromParam, $lte: toParam } };
+    const matchRange = {
+      createdBy: userId,
+      date: { $gte: fromParam, $lte: toParam }
+    };
 
     // Total revenue in range
     const [revenue] = await Sale.aggregate([
@@ -120,14 +161,14 @@ exports.getSalesSummary = async (req, res) => {
     ]);
 
     // Today's revenue
-    const todayStart = new Date(); todayStart.setHours(0,0,0,0);
-    const todayEnd   = new Date(); todayEnd.setHours(23,59,59,999);
+    const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+    const todayEnd   = new Date(); todayEnd.setHours(23, 59, 59, 999);
     const [todayRev] = await Sale.aggregate([
       { $match: { createdBy: userId, date: { $gte: todayStart, $lte: todayEnd } } },
       { $group: { _id: null, total: { $sum: '$total_amount' }, count: { $sum: 1 } } }
     ]);
 
-    // Revenue by sale type (factory / counter / shop / supplier_settlement)
+    // Revenue by sale type
     const bySaleType = await Sale.aggregate([
       { $match: matchRange },
       {
@@ -139,7 +180,7 @@ exports.getSalesSummary = async (req, res) => {
       }
     ]);
 
-    // Revenue by counter (customer_name where sale_type = counter)
+    // Revenue by counter
     const byCounter = await Sale.aggregate([
       { $match: { ...matchRange, sale_type: 'counter' } },
       {
@@ -153,7 +194,8 @@ exports.getSalesSummary = async (req, res) => {
     ]);
 
     // Daily revenue trend (last 30 days)
-    const thirtyAgo = new Date(); thirtyAgo.setDate(thirtyAgo.getDate() - 30);
+    const thirtyAgo = new Date();
+    thirtyAgo.setDate(thirtyAgo.getDate() - 30);
     const dailyTrend = await Sale.aggregate([
       { $match: { createdBy: userId, date: { $gte: thirtyAgo } } },
       {
@@ -184,7 +226,13 @@ exports.getSalesSummary = async (req, res) => {
     // Revenue by payment mode
     const byPayment = await Sale.aggregate([
       { $match: matchRange },
-      { $group: { _id: '$payment_mode', total: { $sum: '$total_amount' }, count: { $sum: 1 } } }
+      {
+        $group: {
+          _id:   '$payment_mode',
+          total: { $sum: '$total_amount' },
+          count: { $sum: 1 }
+        }
+      }
     ]);
 
     // Best-selling packing types

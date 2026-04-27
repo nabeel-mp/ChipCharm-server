@@ -8,7 +8,8 @@ exports.getStockEntries = async (req, res) => {
     const filter = { createdBy: req.user._id };
     if (req.query.product_type) filter.product_type = req.query.product_type;
 
-    const entries = await StockEntry.find(filter).sort({ date: -1 });
+    // FIX: Added createdAt: -1 to ensure the absolute latest entry of the day is always first
+    const entries = await StockEntry.find(filter).sort({ date: -1, createdAt: -1 });
     res.json(entries);
   } catch (err) {
     console.error('getStockEntries error:', err.message);
@@ -22,11 +23,11 @@ exports.createStockEntry = async (req, res) => {
   try {
     const userId = req.user._id;
 
-    // Opening stock = last closing stock for this product type
+    // FIX: Added createdAt: -1 to ensure we calculate opening stock from the absolute latest transaction
     const lastEntry = await StockEntry.findOne({
       createdBy: userId,
       product_type
-    }).sort({ date: -1 });
+    }).sort({ date: -1, createdAt: -1 });
 
     const opening_stock_kg = lastEntry ? lastEntry.closing_stock_kg : 0;
 
