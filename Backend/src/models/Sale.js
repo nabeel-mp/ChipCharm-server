@@ -54,14 +54,13 @@ const saleSchema = new mongoose.Schema({
   }
 }, { timestamps: true });
 
-saleSchema.pre('save', function(next) {
+saleSchema.pre('save', function() {
   // Calc item totals
   for (const item of this.items) {
     item.total_price = item.quantity * item.unit_price;
   }
   this.subtotal = this.items.reduce((s, i) => s + i.total_price, 0);
   this.total_amount = Math.max(0, this.subtotal - (this.discount || 0));
-  next();
 });
 
 module.exports = mongoose.model('Sale', saleSchema);
