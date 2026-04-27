@@ -5,7 +5,10 @@ const tripItemSchema = new mongoose.Schema({
   product_type: { type: String, required: true },
   packing_type: { type: String, required: true },
   weight_per_unit_grams: { type: Number, required: true },
-  quantity: { type: Number, required: true, min: 0 },
+  // Tracks loose packets
+  quantity: { type: Number, default: 0 }, 
+  // Tracks full boxes (only applies to normal_500g)
+  boxes: { type: Number, default: 0 },    
   total_weight_kg: { type: Number, default: 0 },
   // Reference to original packed item if applicable
   packed_item_ref: {
@@ -27,16 +30,19 @@ const supplierTripSchema = new mongoose.Schema({
   },
   // Items carried out today (given to supplier)
   carried_out: [tripItemSchema],
+  
   // Items returned by supplier today
   returned_items: [{
     product_type:          { type: String, required: true },
     packing_type:          { type: String, required: true },
     weight_per_unit_grams: { type: Number, required: true },
-    quantity:              { type: Number, required: true, min: 0 },
+    quantity:              { type: Number, default: 0 },
+    boxes:                 { type: Number, default: 0 }, // Tracking returned boxes
     total_weight_kg:       { type: Number, default: 0 },
     reason: {
       type: String,
-      enum: ['unsold', 'damaged', 'sample_return', 'other'],
+      // Ensures repacking flow from Step 8 is preserved
+      enum: ['unsold', 'damaged', 'sample_return', 'repack_needed', 'other'],
       default: 'unsold'
     },
     notes: { type: String, default: '' }
@@ -62,13 +68,15 @@ const supplierTripSchema = new mongoose.Schema({
   }
 }, { timestamps: true });
 
-// Auto-calc total_weight_kg for each item
+// Auto-calc total_weight_kg combining both loose packets and boxes
 supplierTripSchema.pre('save', function() {
   for (const item of this.carried_out) {
-    item.total_weight_kg = (item.quantity * item.weight_per_unit_grams) / 1000;
+    const totalUnits = (item.quantity || 0) + ((item.boxes || 0) * 18);
+    item.total_weight_kg = (totalUnits * item.weight_per_unit_grams) / 1000;
   }
   for (const item of this.returned_items) {
-    item.total_weight_kg = (item.quantity * item.weight_per_unit_grams) / 1000;
+    const totalUnits = (item.quantity || 0) + ((item.boxes || 0) * 18);
+    item.total_weight_kg = (totalUnits * item.weight_per_unit_grams) / 1000;
   }
 });
 

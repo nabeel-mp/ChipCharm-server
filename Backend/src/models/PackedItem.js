@@ -1,6 +1,13 @@
 const mongoose = require('mongoose');
 
-// Packing types expanded to match factory reality
+const PACKING_TYPES = [
+  'normal_500g', 
+  'normal_1kg', 
+  'jar_small', 
+  'jar_medium', 
+  'bottle'
+];
+
 const packedItemSchema = new mongoose.Schema({
   date: {
     type: Date,
@@ -13,12 +20,12 @@ const packedItemSchema = new mongoose.Schema({
   },
   packing_type: {
     type: String,
-    enum: ['normal_half_kg', 'normal_1kg', 'jar_small', 'jar_medium', 'jar_large', 'big_bottle'],
+    enum: PACKING_TYPES,
     required: true
   },
   weight_per_unit_grams: {
     type: Number,
-    required: true
+    required: true // Customizable for Jars and Bottles as per Step 2
   },
   quantity: {
     type: Number,
@@ -31,7 +38,8 @@ const packedItemSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['in_shop', 'with_supplier', 'delivered_to_counter', 'sold', 'sample', 'returned', 'damaged'],
+    // NEW: Added 'repacked' status for packets that are returned and opened for mixing
+    enum: ['in_shop', 'with_supplier', 'delivered_to_counter', 'sold', 'sample', 'returned', 'damaged', 'repacked'],
     default: 'in_shop'
   },
   label: {
@@ -75,3 +83,4 @@ packedItemSchema.pre('save', function () {
 });
 
 module.exports = mongoose.model('PackedItem', packedItemSchema);
+module.exports.PACKING_TYPES = PACKING_TYPES;

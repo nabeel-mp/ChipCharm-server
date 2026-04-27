@@ -14,6 +14,12 @@ const boxSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  packing_type: {
+    type: String,
+    default: 'normal_500g',
+    enum: ['normal_500g'],
+    required: true
+  },
   // Number of complete boxes packed today
   boxes_packed: {
     type: Number,

@@ -1,5 +1,6 @@
 const SupplierTrip = require('../models/Suppliertrip');
 const PackedItem   = require('../models/PackedItem');
+const Box          = require('../models/Box'); // NEW: Box Model Required
 const mongoose     = require('mongoose');
 
 // GET /api/supplier-trips
@@ -38,65 +39,91 @@ exports.createTrip = async (req, res) => {
     const { date, supplier_name, carried_out, notes } = req.body;
     if (!supplier_name) return res.status(400).json({ message: 'supplier_name is required' });
 
-    // Process each item the supplier is carrying out
     if (carried_out?.length) {
       for (const item of carried_out) {
-        let requiredQty = item.quantity;
-
-        // 1. Find all 'in_shop' packets for this specific product and packing type
-        const shopItems = await PackedItem.find({
-          createdBy: req.user._id,
-          product_type: item.product_type,
-          packing_type: item.packing_type,
-          weight_per_unit_grams: item.weight_per_unit_grams,
-          status: 'in_shop',
-          quantity: { $gt: 0 } // Only get batches that have packets left
-        }).sort({ date: 1 }); // FIFO: take from the oldest packed stock first
-
-        let deductedAmount = 0;
-
-        // 2. Deduct the required quantity from the available shop batches
-        for (const shopItem of shopItems) {
-          if (requiredQty <= 0) break;
-
-          // Figure out how much we can take from this specific batch
-          const take = Math.min(shopItem.quantity, requiredQty);
-          shopItem.quantity -= take;
-          
-          // Recalculate the weight for the shop item and save
-          shopItem.total_weight_kg = (shopItem.quantity * shopItem.weight_per_unit_grams) / 1000;
-          await shopItem.save();
-
-          requiredQty -= take;
-          deductedAmount += take;
-        }
-
-        // 3. If we don't have enough packets in the shop, throw an error
+        
+        // --- 1. HANDLE LOOSE PACKETS ---
+        let requiredQty = item.quantity || 0;
         if (requiredQty > 0) {
-          return res.status(400).json({ 
-            message: `Not enough 'in_shop' stock for ${item.product_type} (${item.packing_type}). You are short by ${requiredQty} packets.` 
+          const shopItems = await PackedItem.find({
+            createdBy: req.user._id,
+            product_type: item.product_type,
+            packing_type: item.packing_type,
+            weight_per_unit_grams: item.weight_per_unit_grams,
+            status: 'in_shop',
+            quantity: { $gt: 0 }
+          }).sort({ date: 1 }); // FIFO
+
+          let deductedAmount = 0;
+          for (const shopItem of shopItems) {
+            if (requiredQty <= 0) break;
+            const take = Math.min(shopItem.quantity, requiredQty);
+            shopItem.quantity -= take;
+            shopItem.total_weight_kg = (shopItem.quantity * shopItem.weight_per_unit_grams) / 1000;
+            await shopItem.save();
+
+            requiredQty -= take;
+            deductedAmount += take;
+          }
+
+          if (requiredQty > 0) {
+            return res.status(400).json({ 
+              message: `Not enough 'in_shop' packet stock for ${item.product_type} (${item.packing_type}). You are short by ${requiredQty} packets.` 
+            });
+          }
+
+          // Create a PackedItem record marking these specific packets as 'with_supplier'
+          const supplierBatch = await PackedItem.create({
+            date: date || new Date(),
+            product_type: item.product_type,
+            packing_type: item.packing_type,
+            weight_per_unit_grams: item.weight_per_unit_grams,
+            quantity: deductedAmount,
+            total_weight_kg: (deductedAmount * item.weight_per_unit_grams) / 1000,
+            status: 'with_supplier',
+            supplier_name: supplier_name,
+            createdBy: req.user._id
           });
+          item.packed_item_ref = supplierBatch._id;
         }
 
-        // 4. Create a brand new PackedItem representing the exact packets the supplier now holds
-        const supplierBatch = await PackedItem.create({
-          date: date || new Date(),
-          product_type: item.product_type,
-          packing_type: item.packing_type,
-          weight_per_unit_grams: item.weight_per_unit_grams,
-          quantity: deductedAmount,
-          total_weight_kg: (deductedAmount * item.weight_per_unit_grams) / 1000,
-          status: 'with_supplier',
-          supplier_name: supplier_name,
-          createdBy: req.user._id
-        });
+        // --- 2. HANDLE FULL BOXES ---
+        let requiredBoxes = item.boxes || 0;
+        if (requiredBoxes > 0) {
+          if (item.packing_type !== 'normal_500g') {
+             return res.status(400).json({ message: 'Boxes can only be assigned to normal_500g products.' });
+          }
 
-        // 5. Link this new batch to the trip item
-        item.packed_item_ref = supplierBatch._id;
+          // Find available boxes in the shop
+          const shopBoxes = await Box.find({
+            createdBy: req.user._id,
+            product_type: item.product_type,
+            boxes_packed: { $gt: 0 }
+          }).sort({ date: 1 }); // FIFO
+
+          let deductedBoxes = 0;
+          for (const shopBox of shopBoxes) {
+            if (requiredBoxes <= 0) break;
+            const take = Math.min(shopBox.boxes_packed, requiredBoxes);
+            
+            shopBox.boxes_packed -= take;
+            shopBox.total_units = shopBox.boxes_packed * shopBox.units_per_box;
+            shopBox.total_weight_kg = (shopBox.total_units * shopBox.weight_per_unit_grams) / 1000;
+            await shopBox.save();
+
+            requiredBoxes -= take;
+            deductedBoxes += take;
+          }
+
+          if (requiredBoxes > 0) {
+            return res.status(400).json({ 
+              message: `Not enough Box stock for ${item.product_type}. You are short by ${requiredBoxes} boxes in the shop.` 
+            });
+          }
+        }
       }
     }
 
-    // Finally, create the SupplierTrip record
     const trip = await SupplierTrip.create({
       date: date || new Date(),
       supplier_name,
@@ -114,7 +141,6 @@ exports.createTrip = async (req, res) => {
 };
 
 // PUT /api/supplier-trips/:id/return  — Record supplier returning items
-// NOTE: No MongoDB transactions used here - works on standalone MongoDB
 exports.recordReturn = async (req, res) => {
   try {
     const { returned_items, cash_collected, notes } = req.body;
@@ -124,21 +150,34 @@ exports.recordReturn = async (req, res) => {
     });
     if (!trip) return res.status(404).json({ message: 'Trip not found' });
 
-    // Update returned items on trip
     trip.returned_items  = returned_items || [];
     trip.cash_collected  = cash_collected || 0;
     trip.notes           = notes || trip.notes;
     trip.status          = 'completed';
 
-    // Mark returned packed items back appropriately
     for (const ret of (returned_items || [])) {
-      if (ret.packed_item_ref) {
+      // Return logic for loose packets
+      if (ret.packed_item_ref && ret.quantity > 0) {
         const status = ret.reason === 'damaged' ? 'damaged' : 'returned';
         await PackedItem.findByIdAndUpdate(ret.packed_item_ref, {
           status,
           return_reason: ret.reason === 'sample_return' ? 'other' : ret.reason,
           return_notes:  ret.notes || ''
         });
+      }
+
+      // NEW: Return logic for Boxes. If a supplier returns intact boxes, add them back to shop.
+      if (ret.boxes > 0) {
+         await Box.create({
+            date: new Date(),
+            product_type: ret.product_type,
+            packing_type: 'normal_500g',
+            boxes_packed: ret.boxes,
+            units_per_box: 18,
+            weight_per_unit_grams: 500,
+            notes: `Returned from supplier ${trip.supplier_name}. Reason: ${ret.reason}. ${ret.notes || ''}`,
+            createdBy: req.user._id
+         });
       }
     }
 

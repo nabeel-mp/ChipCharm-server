@@ -4,7 +4,7 @@ const PRODUCT_TYPES = [
   'Salted Banana Chips',
   'Spicy Banana Chips',
   'Sweet Banana Chips',
-  'Banana 4 Cut',
+  '4 Cut Banana Chips',
   'Jaggery'
 ];
 
@@ -23,6 +23,10 @@ const stockEntrySchema = new mongoose.Schema({
     type: Number,
     required: true,
     min: 0
+  },
+  repacked_added_kg: {
+    type: Number,
+    default: 0
   },
   opening_stock_kg: {
     type: Number,
