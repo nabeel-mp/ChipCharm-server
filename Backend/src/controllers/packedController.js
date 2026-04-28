@@ -202,6 +202,36 @@ exports.getPackedSummary = async (req, res) => {
       },
       { $sort: { '_id.product_type': 1 } }
     ]);
+
+    // Box summary to augment packing counts
+    const Box = require('../models/Box');
+    const boxSummary = await Box.aggregate([
+      { $match: { createdBy: userId } },
+      {
+        $group: {
+          _id: '$product_type',
+          total_units: { $sum: '$total_units' },
+          total_kg: { $sum: '$total_weight_kg' }
+        }
+      }
+    ]);
+
+    boxSummary.forEach(b => {
+      const existing = summary.find(
+        s => s._id.product_type === b._id && s._id.status === 'in_shop'
+      );
+      if (existing) {
+        existing.total_units += b.total_units;
+        existing.total_kg += b.total_kg;
+      } else {
+        summary.push({
+          _id: { product_type: b._id, status: 'in_shop' },
+          total_units: b.total_units,
+          total_kg: b.total_kg
+        });
+      }
+    });
+
     res.json(summary);
   } catch (err) {
     res.status(500).json({ message: err.message });

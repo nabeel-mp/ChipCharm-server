@@ -1,5 +1,6 @@
 const StockEntry = require('../models/StockEntry');
 const PackedItem = require('../models/PackedItem');
+const Box = require('../models/Box');
 
 const PRODUCT_TYPES = [
   'Salted Banana Chips',
@@ -43,6 +44,25 @@ exports.getDashboardSummary = async (req, res) => {
       { $group: { _id: null, total: { $sum: '$produced_kg' } } }
     ]);
 
+    // Box totals to augment packing
+    const boxSummary = await Box.aggregate([
+      { $match: { createdBy: userId } },
+      {
+        $group: {
+          _id: '$product_type',
+          total_units: { $sum: '$total_units' },
+          total_weight_kg: { $sum: '$total_weight_kg' }
+        }
+      }
+    ]);
+
+    let totalBoxUnits = 0;
+    let totalBoxKg = 0;
+    boxSummary.forEach(b => {
+      totalBoxUnits += b.total_units;
+      totalBoxKg += b.total_weight_kg;
+    });
+
     // Packed summary by status
     const packedSummary = await PackedItem.aggregate([
       { $match: { createdBy: userId } },
@@ -54,6 +74,21 @@ exports.getDashboardSummary = async (req, res) => {
         }
       }
     ]);
+
+    // Merge Boxes into 'in_shop' packing counts
+    if (totalBoxUnits > 0) {
+      const inShopStatus = packedSummary.find(s => s._id === 'in_shop');
+      if (inShopStatus) {
+        inShopStatus.total_units += totalBoxUnits;
+        inShopStatus.total_kg += totalBoxKg;
+      } else {
+        packedSummary.push({
+          _id: 'in_shop',
+          total_units: totalBoxUnits,
+          total_kg: totalBoxKg
+        });
+      }
+    }
 
     // Packed summary by product type
     const packedByProduct = await PackedItem.aggregate([
@@ -82,6 +117,24 @@ exports.getDashboardSummary = async (req, res) => {
         }
       }
     ]);
+
+    // Merge Boxes into packedByProduct inside 'in_shop'
+    boxSummary.forEach(b => {
+      let prod = packedByProduct.find(p => p._id === b._id);
+      if (prod) {
+        prod.in_shop += b.total_units;
+      } else {
+        packedByProduct.push({
+          _id: b._id,
+          in_shop: b.total_units,
+          with_supplier: 0,
+          sold: 0,
+          sample: 0,
+          returned: 0,
+          damaged: 0
+        });
+      }
+    });
 
     // Returns this week
     const weekAgo = new Date();

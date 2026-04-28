@@ -25,9 +25,12 @@ exports.createBox = async (req, res) => {
     const {
       date, product_type, boxes_packed,
       units_per_box = 18,
-      weight_per_unit_grams = 500,
       notes
     } = req.body;
+
+    // Force normal 500g for boxes
+    const weight_per_unit_grams = 500;
+    const packing_type = 'normal_500g';
 
     if (!product_type)  throw new Error('product_type is required');
     if (!boxes_packed || boxes_packed < 1) throw new Error('boxes_packed must be >= 1');
@@ -62,6 +65,7 @@ exports.createBox = async (req, res) => {
     const box = new Box({
       date:                  date || new Date(),
       product_type,
+      packing_type,
       boxes_packed:          Number(boxes_packed),
       units_per_box:         Number(units_per_box),
       weight_per_unit_grams: Number(weight_per_unit_grams),
